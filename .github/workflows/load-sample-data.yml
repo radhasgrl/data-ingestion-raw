@@ -76,11 +76,13 @@ jobs:
           done
           if [ "$PENDING" != "0" ]; then
             echo "::warning::Snowpipe still reports $PENDING pending file(s) after 2 minutes of polling — the row count check below may be stale. Re-run this workflow or check SYSTEM\$PIPE_STATUS manually."
+          else
+            # Small safety margin: pendingFileCount can hit 0 a moment before the loaded
+            # rows are actually queryable (observed once in testing: pendingFileCount=0
+            # immediately followed by ROW_COUNT=0, with a retry a few seconds later
+            # correctly showing the real count).
+            sleep 5
           fi
 
       - name: Verify row count
         run: snow sql -q "SELECT COUNT(*) AS row_count FROM DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
-
-      - name: Diagnostic - copy history (temporary, investigating zero-row result)
-        run: |
-          snow sql -q "SELECT FILE_NAME, STATUS, ROW_COUNT, ROW_PARSED, FIRST_ERROR_MESSAGE, LAST_LOAD_TIME FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(TABLE_NAME=>'DEV_CUSTOMER_DB.RAW.CUSTOMERS', START_TIME=>DATEADD('hour', -1, CURRENT_TIMESTAMP()))) ORDER BY LAST_LOAD_TIME DESC;"
