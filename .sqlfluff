@@ -1,0 +1,8 @@
+[sqlfluff]
+dialect = snowflake
+# Keep rules that catch genuine syntax problems (unparseable SQL, mismatched
+# parens/quotes, structural errors). Exclude purely cosmetic layout rules (line length,
+# indentation) — these SQL files intentionally indent for readability in a way that
+# doesn't match sqlfluff's default style, and failing CI on indentation alone would make
+# every PR show a red X for non-issues rather than real problems.
+exclude_rules = layout.indent, layout.long_lines

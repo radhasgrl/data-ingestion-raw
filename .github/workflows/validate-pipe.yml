@@ -1,0 +1,61 @@
+name: Validate Snowpipe SQL (PR preview)
+
+# This is Repo 2's equivalent of Repo 1's "plan" step. Snowflake doesn't offer a native
+# dry-run/plan mode for ad hoc DDL the way Terraform or DCM do, and these statements
+# (CREATE STAGE/PIPE/FILE FORMAT/STORAGE INTEGRATION) aren't transactional — they'd apply
+# for real if executed on a PR. So instead of a true state diff, this validates SQL syntax
+# with a Snowflake-aware linter and posts the proposed SQL diff as a PR comment, giving
+# reviewers something concrete to check before merge.
+#
+# Honest limitation: sqlfluff catches syntax errors (unparseable SQL, typos in structure)
+# but not Snowflake-engine semantic rules — e.g. it would not have caught this pipeline's
+# earlier real bug (ON_ERROR = 'ABORT_STATEMENT' being a valid COPY option in general, but
+# not valid specifically inside a CREATE PIPE body), since that's a runtime/semantic check
+# only Snowflake itself can perform. There is no safe way to dry-run that check without
+# actually executing the DDL.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "sql/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    name: Lint SQL + preview diff
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sqlfluff
+        run: pip install sqlfluff
+
+      - name: Lint SQL files (Snowflake dialect)
+        run: sqlfluff lint sql/ --dialect snowflake
+
+      - name: Post proposed SQL diff as PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const diff = execSync('git diff origin/main...HEAD -- sql/', { maxBuffer: 10 * 1024 * 1024 }).toString();
+            const truncated = diff.length > 60000 ? diff.slice(0, 60000) + '\n\n...output truncated' : diff;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Proposed Snowpipe SQL changes\n\`\`\`diff\n${truncated || '(no changes under sql/)'}\n\`\`\``
+            });
