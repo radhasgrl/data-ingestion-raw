@@ -56,6 +56,9 @@ jobs:
       - name: Deploy storage integration
         run: snow sql -f sql/02_storage_integration.sql
 
+      - name: Describe storage integration (for AWS trust policy)
+        run: snow sql -q "DESC INTEGRATION DEV_CUSTOMER_RAW_S3_INTEGRATION;"
+
       - name: Deploy external stage
         run: snow sql -f sql/03_external_stage.sql
 
