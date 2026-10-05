@@ -80,3 +80,7 @@ jobs:
 
       - name: Verify row count
         run: snow sql -q "SELECT COUNT(*) AS row_count FROM DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
+
+      - name: Diagnostic - copy history (temporary, investigating zero-row result)
+        run: |
+          snow sql -q "SELECT FILE_NAME, STATUS, ROW_COUNT, ROW_PARSED, FIRST_ERROR_MESSAGE, LAST_LOAD_TIME FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(TABLE_NAME=>'DEV_CUSTOMER_DB.RAW.CUSTOMERS', START_TIME=>DATEADD('hour', -1, CURRENT_TIMESTAMP()))) ORDER BY LAST_LOAD_TIME DESC;"
