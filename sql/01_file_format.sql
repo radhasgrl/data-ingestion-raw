@@ -9,3 +9,5 @@ CREATE OR REPLACE FILE FORMAT DEV_CUSTOMER_DB.RAW.CUSTOMER_CSV_FORMAT
   NULL_IF = ('', 'NULL')
   EMPTY_FIELD_AS_NULL = TRUE
   COMMENT = 'CSV format for sample customer records landed by data-ingestion-raw';
+
+-- test comment to trigger validate-pipe.yml CI check
