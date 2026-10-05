@@ -58,13 +58,25 @@ jobs:
         run: snow sql -q "ALTER PIPE DEV_CUSTOMER_DB.RAW.CUSTOMER_INGEST_PIPE REFRESH;"
 
       # ALTER PIPE ... REFRESH is asynchronous (it queues files; COPY happens in the
-      # background) - wait briefly, then check pipe status to confirm ingestion actually
-      # happened before trusting a simple row count.
-      - name: Wait for queued load to process
-        run: sleep 20
-
-      - name: Check pipe status
-        run: snow sql -q "SELECT SYSTEM\$PIPE_STATUS('DEV_CUSTOMER_DB.RAW.CUSTOMER_INGEST_PIPE');"
+      # background). Poll SYSTEM$PIPE_STATUS until pendingFileCount reaches 0 instead of
+      # guessing a fixed sleep duration — a fixed `sleep 20` showed ROW_COUNT=0 on a slow
+      # run during initial testing of this pipeline, which would look like a failed demo
+      # on stage even though the load was simply still in flight.
+      - name: Wait for Snowpipe to finish processing (poll, not a fixed sleep)
+        run: |
+          for i in $(seq 1 24); do
+            RAW_JSON=$(snow sql -q "SELECT SYSTEM\$PIPE_STATUS('DEV_CUSTOMER_DB.RAW.CUSTOMER_INGEST_PIPE') AS STATUS;" --format json)
+            PENDING=$(echo "$RAW_JSON" | jq -r '.[0].STATUS' | jq -r '.pendingFileCount')
+            echo "Attempt $i/24: pendingFileCount=$PENDING"
+            if [ "$PENDING" = "0" ]; then
+              echo "Snowpipe has finished processing all queued files."
+              break
+            fi
+            sleep 5
+          done
+          if [ "$PENDING" != "0" ]; then
+            echo "::warning::Snowpipe still reports $PENDING pending file(s) after 2 minutes of polling — the row count check below may be stale. Re-run this workflow or check SYSTEM\$PIPE_STATUS manually."
+          fi
 
       - name: Verify row count
         run: snow sql -q "SELECT COUNT(*) AS row_count FROM DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
