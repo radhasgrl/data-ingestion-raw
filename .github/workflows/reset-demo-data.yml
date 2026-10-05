@@ -1,0 +1,44 @@
+name: Reset Demo Data
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  reset:
+    name: Truncate RAW.CUSTOMERS
+    runs-on: ubuntu-latest
+    environment:
+      name: DEV-Ingest
+
+    env:
+      SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
+      SNOWFLAKE_USER: GITHUB_DEV_INGEST_SVC
+      SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
+
+    steps:
+      - name: Setup Snowflake CLI (OIDC)
+        uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+
+      - name: Create default Snowflake CLI connection (OIDC)
+        run: |
+          snow connection add \
+            --connection-name github \
+            --account "$SNOWFLAKE_ACCOUNT" \
+            --user "$SNOWFLAKE_USER" \
+            --role DEV_CUSTOMER_INGEST_SERVICE_PRSN \
+            --warehouse DEV_INGEST_WH \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --default \
+            --no-interactive
+
+      # Clears out duplicate customer_id rows left over from repeated demo runs, so the
+      # next Load Sample Data run (and Repo 3's dbt build/tests) start from a clean state.
+      - name: Truncate RAW.CUSTOMERS
+        run: snow sql -q "TRUNCATE TABLE DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
