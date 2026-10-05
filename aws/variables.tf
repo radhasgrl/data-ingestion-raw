@@ -17,9 +17,9 @@ variable "bucket_name" {
 }
 
 variable "snowflake_iam_user_arn" {
-  description = "STORAGE_AWS_IAM_USER_ARN from `DESC INTEGRATION DEV_CUSTOMER_RAW_S3_INTEGRATION` — placeholder until the storage integration is created once (see main.tf comment on aws_iam_role.snowflake_storage_integration)"
+  description = "STORAGE_AWS_IAM_USER_ARN from `DESC INTEGRATION DEV_CUSTOMER_RAW_S3_INTEGRATION` — placeholder (this account's own root) until the storage integration is created once (see main.tf comment on aws_iam_role.snowflake_storage_integration). AWS validates that principal ARNs reference a real, existing account at role-creation time, so a made-up account ID (e.g. 000000000000) is rejected outright — self-trust is the safe placeholder."
   type        = string
-  default     = "arn:aws:iam::000000000000:user/placeholder-run-desc-integration-first"
+  default     = "arn:aws:iam::525218385225:root"
 }
 
 variable "snowflake_external_id" {
