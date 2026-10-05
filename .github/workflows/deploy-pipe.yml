@@ -1,0 +1,63 @@
+name: Deploy Snowpipe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sql/**"
+      - ".github/workflows/deploy-pipe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy Snowpipe objects
+    runs-on: ubuntu-latest
+    environment:
+      name: DEV-Ingest
+
+    env:
+      SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
+      SNOWFLAKE_USER: GITHUB_DEV_INGEST_SVC
+      SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Snowflake CLI (OIDC)
+        uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+
+      # Least-privilege: this user has exactly one role, so it's specified explicitly here
+      # rather than relying on a DEFAULT_ROLE (same reasoning as the dbt profile in Repo 3).
+      - name: Create default Snowflake CLI connection (OIDC)
+        run: |
+          snow connection add \
+            --connection-name github \
+            --account "$SNOWFLAKE_ACCOUNT" \
+            --user "$SNOWFLAKE_USER" \
+            --role DEV_CUSTOMER_INGEST_SERVICE_PRSN \
+            --warehouse DEV_INGEST_WH \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --default \
+            --no-interactive
+
+      - name: Deploy file format
+        run: snow sql -f sql/01_file_format.sql
+
+      - name: Deploy storage integration
+        run: snow sql -f sql/02_storage_integration.sql
+
+      - name: Deploy external stage
+        run: snow sql -f sql/03_external_stage.sql
+
+      - name: Deploy pipe
+        run: snow sql -f sql/04_pipe.sql

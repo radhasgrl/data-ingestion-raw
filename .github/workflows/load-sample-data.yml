@@ -1,0 +1,61 @@
+name: Load Sample Data (demo)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  load:
+    name: Upload sample CSV + refresh pipe
+    runs-on: ubuntu-latest
+    environment:
+      name: DEV-Ingest
+
+    env:
+      SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
+      SNOWFLAKE_USER: GITHUB_DEV_INGEST_SVC
+      SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::525218385225:role/data-ingestion-raw-github-oidc
+          aws-region: ap-southeast-2
+
+      - name: Upload sample CSV to S3
+        run: |
+          aws s3 cp sample-data/customers_sample.csv \
+            "s3://data-ingestion-raw-525218385225/customers_sample_$(date +%s).csv"
+
+      - name: Setup Snowflake CLI (OIDC)
+        uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+
+      - name: Create default Snowflake CLI connection (OIDC)
+        run: |
+          snow connection add \
+            --connection-name github \
+            --account "$SNOWFLAKE_ACCOUNT" \
+            --user "$SNOWFLAKE_USER" \
+            --role DEV_CUSTOMER_INGEST_SERVICE_PRSN \
+            --warehouse DEV_INGEST_WH \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --default \
+            --no-interactive
+
+      - name: Refresh pipe (manual-trigger Snowpipe)
+        run: snow sql -q "ALTER PIPE DEV_CUSTOMER_DB.RAW.CUSTOMER_INGEST_PIPE REFRESH;"
+
+      - name: Verify row count
+        run: snow sql -q "SELECT COUNT(*) AS row_count FROM DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
