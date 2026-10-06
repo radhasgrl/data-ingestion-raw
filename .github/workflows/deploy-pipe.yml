@@ -44,7 +44,7 @@ jobs:
             --account "$SNOWFLAKE_ACCOUNT" \
             --user "$SNOWFLAKE_USER" \
             --role DEV_CUSTOMER_INGEST_SERVICE_PRSN \
-            --warehouse DEV_INGEST_WH \
+            --warehouse DEV_CUSTOMER_INGEST_WH \
             --authenticator WORKLOAD_IDENTITY \
             --workload-identity-provider OIDC \
             --default \

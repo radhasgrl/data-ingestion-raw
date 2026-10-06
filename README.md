@@ -83,7 +83,7 @@ pipe, and prints the row count.
 |---|---|---|
 | Snowflake user | `GITHUB_DEV_INGEST_SVC` | Terraform (Repo 1, `oidc_service_user.tf`) |
 | Role | `DEV_CUSTOMER_INGEST_SERVICE_PRSN` (Tier 1 persona) | DCM (Repo 1, `sources/definitions/roles.sql` + `grants.sql`) |
-| Effective access | `CREATE INTEGRATION` (account), `CREATE STAGE/FILE FORMAT/PIPE` + read-write on `DEV_CUSTOMER_DB.RAW`, `USAGE` on `DEV_INGEST_WH` | Via `DEV_CUSTOMER_INGEST_FNCRL` (Tier 2) |
+| Effective access | `CREATE INTEGRATION` (account), `CREATE STAGE/FILE FORMAT/PIPE` + read-write on `DEV_CUSTOMER_DB.RAW`, `USAGE` on `DEV_CUSTOMER_INGEST_WH` | Via `DEV_CUSTOMER_INGEST_FNCRL` (Tier 2) |
 | Auth method | GitHub OIDC workload identity — no stored password, key, or token | — |
 | GitHub Environment | `DEV-Ingest` | This repo |
 | AWS role (CI) | `data-ingestion-raw-github-oidc` | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
