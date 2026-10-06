@@ -1,16 +1,19 @@
 # data-ingestion-raw (Repo 2 of 3)
 
-Snowpipe ingestion into the Customer domain's RAW layer — the second repo in the 3-repo
-platform demo. Loads CSV files dropped in S3 into `DEV_CUSTOMER_DB.RAW.CUSTOMERS`, a table
-owned and defined by Repo 1 (`infra-snowflake`).
+Snowpipe ingestion into per-domain RAW layers — the second repo in the 3-repo platform
+demo. Currently loads CSV files dropped in S3 into `DEV_CUSTOMER_DB.RAW.CUSTOMERS`, a table
+owned and defined by Repo 1 (`snowflake-platform-tf`). This repo stays **one shared repo**
+across every domain that uses the Snowpipe ingestion pattern (unlike Repo 3, which is one
+repo per domain) — what's per-domain here is the SQL template's rendered values and each
+domain's own CI gating, not the repo itself.
 
 ```
-Repo 1: infra-snowflake (Terraform + DCM)  → provisions DEV_CUSTOMER_DB.RAW.CUSTOMERS,
-                                               tiered RBAC, and this repo's own Snowflake
-                                               identity (GITHUB_DEV_INGEST_SVC)
-Repo 2: data-ingestion-raw (this repo)      → S3 bucket → storage integration → stage →
-                                               pipe → DEV_CUSTOMER_DB.RAW.CUSTOMERS
-Repo 3: customer-domain-dbt                 → stg_customers -> dim_customers
+Repo 1: snowflake-platform-tf (Terraform + DCM) → provisions DEV_CUSTOMER_DB.RAW.CUSTOMERS,
+                                                    tiered RBAC, and this repo's own Snowflake
+                                                    identities (GITHUB_DEV_INGEST_SVC, per domain)
+Repo 2: data-ingestion-raw (this repo)           → S3 bucket → storage integration → stage →
+                                                    pipe → DEV_CUSTOMER_DB.RAW.CUSTOMERS
+Repo 3: customer-domain-dbt                      → stg_customers -> dim_customers
 ```
 
 This repo intentionally contains no Terraform/DCM definitions at all — no Snowflake
@@ -19,7 +22,59 @@ bucket, IAM roles). All resource provisioning for the whole platform lives in Re
 (`snowflake-platform-tf`), including the AWS infra this repo's pipeline runs against
 (see `ingestion_aws_infra.tf` in Repo 1). This repo owns only ingestion **code**: the SQL
 that creates the Snowflake-side ingestion objects (storage integration, stage, file
-format, pipe) that load into Repo 1's `RAW.CUSTOMERS` table, plus the CI/CD that runs it.
+format, pipe) that load into Repo 1's `RAW` tables, plus the CI/CD that runs it.
+
+## Folder structure
+
+```
+.
+├── sql/
+│   ├── _template/                    # THE canonical, domain-agnostic Snowpipe-pattern
+│   │   ├── 01_file_format.sql        #   template — Jinja2-templated, zero hardcoded
+│   │   ├── 02_storage_integration.sql #  domain names. Rendered via
+│   │   ├── 03_external_stage.sql     #   `snow sql --enable-templating JINJA`, not a
+│   │   └── 04_pipe.sql               #   custom synthesis script (Repo 1 needs one
+│   │                                 #   because DCM owns that mechanism itself; the
+│   │                                 #   Snowflake CLI's own templating does it here).
+│   ├── domains/
+│   │   └── customer/
+│   │       └── config.json           # Customer's own values — database, table, stage/
+│   │                                 #   pipe/integration names, bucket prefix, identity.
+│   │                                 #   Zero SQL.
+│   ├── active_ingestion_domains.json # The "go live" switch — only domains listed here
+│   │                                 #   ever get a deploy-snowpipe.yml CI job
+│   └── detect-changed-domains.sh     # diffs changed files -> which active domains'
+│                                     #   deploy jobs should run this CI run
+│
+├── .github/workflows/
+│   ├── deploy-snowpipe.yml           # detect-domains + matrix deploy job (one per changed
+│   │                                 #   active domain), on push to main or workflow_dispatch
+│   ├── validate-pipe.yml             # sqlfluff lint of sql/_template/ + diff preview, on PR
+│   ├── load-sample-data.yml          # workflow_dispatch, domain input — demo helper
+│   └── reset-demo-data.yml           # workflow_dispatch, domain input — demo helper
+│
+├── sample-data/customers_sample.csv
+└── README.md
+```
+
+## Onboarding a new ingestion domain
+
+Same discipline as Repo 1's domain templating — a new domain using the **Snowpipe pattern**
+needs zero new SQL:
+
+1. Write `sql/domains/<domain>/config.json` (copy Customer's, change the values — database,
+   table, stage/pipe/integration names, `bucket_prefix`, identity/role/warehouse).
+2. Add `{"name": "<domain>", "target": "<DOMAIN>", "github_environment": "DEV-Ingest-<Domain>"}`
+   to `sql/active_ingestion_domains.json`.
+3. Create that domain's `GITHUB_DEV_<DOMAIN>_INGEST_SVC` identity and `DEV-Ingest-<Domain>`
+   GitHub Environment (see Repo 1's `terraform/domain_identities.tf` and this repo's
+   "Identity and access" section below).
+4. Merge. `deploy-snowpipe.yml`'s detect-domains job picks up the new domain automatically.
+
+A **different ingestion pattern** (Openflow, a custom API poller, etc.) gets its own sibling
+workflow (e.g. `deploy-openflow.yml`) and its own `sql/_template_openflow/` — not a bigger
+version of this one. This repo stays organized by pattern, same as the user's original
+request: "repo 2 will have = ingestion pattern based" workflows.
 
 ## Manual-trigger Snowpipe, by design
 
@@ -27,8 +82,9 @@ This demo uses `AUTO_INGEST = FALSE` — you upload a file, then run `ALTER PIPE
 to load it, rather than relying on an S3 event notification → SQS → Snowpipe auto-trigger.
 This is a deliberate reliability choice for a live demo (deterministic, instant, no extra
 AWS event-notification wiring to get wrong). Upgrading to full auto-ingest later only needs:
-set `AUTO_INGEST = TRUE` in `sql/04_pipe.sql`, then wire the pipe's `notification_channel`
-(see `DESC PIPE`) to an S3 Event Notification on the bucket — nothing else changes.
+set `AUTO_INGEST = TRUE` in `sql/_template/04_pipe.sql`, then wire the pipe's
+`notification_channel` (see `DESC PIPE`) to an S3 Event Notification on the bucket —
+nothing else changes, and the change applies to every domain using this pattern at once.
 
 ## One-time setup (you must do this once, in order)
 
@@ -38,14 +94,16 @@ The GitHub Actions OIDC IAM role (`data-ingestion-raw-github-oidc`), the S3 sour
 and the IAM role Snowflake assumes (`data-ingestion-raw-snowflake-storage-integration`) are
 all provisioned by Repo 1's Terraform (`ingestion_aws_infra.tf`), not this repo. This repo
 only references those already-created resource names/ARNs in its SQL and CI — it never
-creates or destroys AWS infrastructure.
+creates or destroys AWS infrastructure. The bucket is shared across every domain using this
+pattern; what's per-domain is the prefix within it (`bucket_prefix` in each domain's
+`config.json`).
 
 ### 2. Deploy the Snowflake objects (CI — automatic on push, or `workflow_dispatch`)
 
-`.github/workflows/deploy-pipe.yml` runs `sql/01_file_format.sql` →
-`sql/02_storage_integration.sql` → `sql/03_external_stage.sql` → `sql/04_pipe.sql`, as
-`GITHUB_DEV_INGEST_SVC` (least-privilege: only `DEV_CUSTOMER_INGEST_SERVICE_PRSN`,
-provisioned by Repo 1).
+`.github/workflows/deploy-snowpipe.yml` renders `sql/_template/01_file_format.sql` →
+`02_storage_integration.sql` → `03_external_stage.sql` → `04_pipe.sql` for each changed
+active domain, as that domain's own ingestion identity (`GITHUB_DEV_INGEST_SVC` for
+Customer — least-privilege: only `DEV_CUSTOMER_INGEST_SERVICE_PRSN`, provisioned by Repo 1).
 
 ### 3. Close the storage integration trust loop (one-time, manual)
 
@@ -61,14 +119,14 @@ DESC INTEGRATION DEV_CUSTOMER_RAW_S3_INTEGRATION;
 -- in Repo 1's ingestion_aws_infra.tf trust policy; update there (via PR) if they differ.
 ```
 
-Without a matching trust policy, the external stage (`sql/03_external_stage.sql`) will
-fail to validate and the pipe will not be able to read from S3.
+Without a matching trust policy, the external stage will fail to validate and the pipe
+will not be able to read from S3.
 
 ## Running the demo
 
 **Option A — scripted (click a button):** run the `Load Sample Data (demo)` workflow
-(`workflow_dispatch`) — uploads `sample-data/customers_sample.csv` to S3, refreshes the
-pipe, and prints the row count.
+(`workflow_dispatch`, `domain` input defaults to `customer`) — uploads
+`sample-data/customers_sample.csv` to S3, refreshes the pipe, and prints the row count.
 
 **Option B — live, for the actual demo:**
 
@@ -81,11 +139,12 @@ pipe, and prints the row count.
 
 | Item | Value | Owned by |
 |---|---|---|
-| Snowflake user | `GITHUB_DEV_INGEST_SVC` | Terraform (Repo 1, `oidc_service_user.tf`) |
-| Role | `DEV_CUSTOMER_INGEST_SERVICE_PRSN` (Tier 1 persona) | DCM (Repo 1, `sources/definitions/roles.sql` + `grants.sql`) |
+| Snowflake user | `GITHUB_DEV_INGEST_SVC` | Terraform (Repo 1, `terraform/domain_identities.tf`) |
+| Role | `DEV_CUSTOMER_INGEST_SERVICE_PRSN` (Tier 1 persona) | DCM (Repo 1, `dcm/_template/sources/definitions/roles.sql` + `grants.sql`) |
 | Effective access | `CREATE INTEGRATION` (account), `CREATE STAGE/FILE FORMAT/PIPE` + read-write on `DEV_CUSTOMER_DB.RAW`, `USAGE` on `DEV_CUSTOMER_INGEST_WH` | Via `DEV_CUSTOMER_INGEST_FNCRL` (Tier 2) |
 | Auth method | GitHub OIDC workload identity — no stored password, key, or token | — |
-| GitHub Environment | `DEV-Ingest` | This repo |
+| GitHub Environment | `DEV-Ingest` (Customer kept its original unprefixed name; later domains use `DEV-Ingest-<Domain>`) | This repo |
 | AWS role (CI) | `data-ingestion-raw-github-oidc` | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
 | AWS role (Snowflake) | `data-ingestion-raw-snowflake-storage-integration` | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
-| S3 bucket | `data-ingestion-raw-525218385225` | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
+| S3 bucket | `data-ingestion-raw-525218385225` (shared across domains, prefix-scoped per domain) | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
+

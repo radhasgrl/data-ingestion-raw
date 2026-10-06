@@ -2,6 +2,12 @@ name: Reset Demo Data
 
 on:
   workflow_dispatch:
+    inputs:
+      domain:
+        description: "Domain to reset (folder name under sql/domains/)"
+        required: true
+        default: "customer"
+        type: string
 
 permissions:
   contents: read
@@ -9,17 +15,35 @@ permissions:
 
 jobs:
   reset:
-    name: Truncate RAW.CUSTOMERS
+    name: Truncate RAW table
     runs-on: ubuntu-latest
+    # See the matching comment in load-sample-data.yml for why Customer is a special case.
     environment:
-      name: DEV-Ingest
+      name: ${{ inputs.domain == 'customer' && 'DEV-Ingest' || format('DEV-Ingest-{0}', inputs.domain) }}
 
     env:
       SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
-      SNOWFLAKE_USER: GITHUB_DEV_INGEST_SVC
-      SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Load domain config
+        id: config
+        run: |
+          CONFIG_FILE="sql/domains/${{ inputs.domain }}/config.json"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::No such domain '${{ inputs.domain }}' (expected $CONFIG_FILE to exist)"
+            exit 1
+          fi
+          echo "database=$(jq -r .database "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "table=$(jq -r .table "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "user=$(jq -r .user "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "role=$(jq -r .role "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "warehouse=$(jq -r .warehouse "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+
       - name: Setup Snowflake CLI (OIDC)
         uses: snowflakedb/snowflake-actions@v3
         with:
@@ -30,15 +54,15 @@ jobs:
           snow connection add \
             --connection-name github \
             --account "$SNOWFLAKE_ACCOUNT" \
-            --user "$SNOWFLAKE_USER" \
-            --role DEV_CUSTOMER_INGEST_SERVICE_PRSN \
-            --warehouse DEV_CUSTOMER_INGEST_WH \
+            --user "${{ steps.config.outputs.user }}" \
+            --role "${{ steps.config.outputs.role }}" \
+            --warehouse "${{ steps.config.outputs.warehouse }}" \
             --authenticator WORKLOAD_IDENTITY \
             --workload-identity-provider OIDC \
             --default \
             --no-interactive
 
-      # Clears out duplicate customer_id rows left over from repeated demo runs, so the
-      # next Load Sample Data run (and Repo 3's dbt build/tests) start from a clean state.
-      - name: Truncate RAW.CUSTOMERS
-        run: snow sql -q "TRUNCATE TABLE DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
+      # Clears out duplicate rows left over from repeated demo runs, so the next Load
+      # Sample Data run (and Repo 3's dbt build/tests) start from a clean state.
+      - name: Truncate RAW table
+        run: snow sql -q "TRUNCATE TABLE ${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.table }};"

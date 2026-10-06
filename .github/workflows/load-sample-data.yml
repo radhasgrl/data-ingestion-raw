@@ -2,6 +2,12 @@ name: Load Sample Data (demo)
 
 on:
   workflow_dispatch:
+    inputs:
+      domain:
+        description: "Domain to load sample data into (folder name under sql/domains/)"
+        required: true
+        default: "customer"
+        type: string
 
 permissions:
   contents: read
@@ -11,19 +17,38 @@ jobs:
   load:
     name: Upload sample CSV + refresh pipe
     runs-on: ubuntu-latest
+    # Customer kept its original, unprefixed GitHub Environment name (DEV-Ingest) rather
+    # than being renamed to the domain-prefixed convention — same reasoning as Customer's
+    # GITHUB_DEV_INGEST_SVC identity keeping its legacy name in Repo 1's
+    # terraform/domain_identities.tf. Every domain after Customer follows the standard
+    # DEV-Ingest-<Domain> convention.
     environment:
-      name: DEV-Ingest
+      name: ${{ inputs.domain == 'customer' && 'DEV-Ingest' || format('DEV-Ingest-{0}', inputs.domain) }}
 
     env:
       SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
-      SNOWFLAKE_USER: GITHUB_DEV_INGEST_SVC
-      SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Load domain config
+        id: config
+        run: |
+          CONFIG_FILE="sql/domains/${{ inputs.domain }}/config.json"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::No such domain '${{ inputs.domain }}' (expected $CONFIG_FILE to exist)"
+            exit 1
+          fi
+          echo "database=$(jq -r .database "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "table=$(jq -r .table "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "pipe_name=$(jq -r .pipe_name "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "bucket_prefix=$(jq -r .bucket_prefix "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "user=$(jq -r .user "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "role=$(jq -r .role "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "warehouse=$(jq -r .warehouse "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -34,7 +59,7 @@ jobs:
       - name: Upload sample CSV to S3
         run: |
           aws s3 cp sample-data/customers_sample.csv \
-            "s3://data-ingestion-raw-525218385225/customers_sample_$(date +%s).csv"
+            "s3://data-ingestion-raw-525218385225/${{ steps.config.outputs.bucket_prefix }}customers_sample_$(date +%s).csv"
 
       - name: Setup Snowflake CLI (OIDC)
         uses: snowflakedb/snowflake-actions@v3
@@ -46,16 +71,16 @@ jobs:
           snow connection add \
             --connection-name github \
             --account "$SNOWFLAKE_ACCOUNT" \
-            --user "$SNOWFLAKE_USER" \
-            --role DEV_CUSTOMER_INGEST_SERVICE_PRSN \
-            --warehouse DEV_CUSTOMER_INGEST_WH \
+            --user "${{ steps.config.outputs.user }}" \
+            --role "${{ steps.config.outputs.role }}" \
+            --warehouse "${{ steps.config.outputs.warehouse }}" \
             --authenticator WORKLOAD_IDENTITY \
             --workload-identity-provider OIDC \
             --default \
             --no-interactive
 
       - name: Refresh pipe (manual-trigger Snowpipe)
-        run: snow sql -q "ALTER PIPE DEV_CUSTOMER_DB.RAW.CUSTOMER_INGEST_PIPE REFRESH;"
+        run: snow sql -q "ALTER PIPE ${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.pipe_name }} REFRESH;"
 
       # ALTER PIPE ... REFRESH is asynchronous (it queues files; COPY happens in the
       # background). Poll SYSTEM$PIPE_STATUS until pendingFileCount reaches 0 instead of
@@ -64,8 +89,9 @@ jobs:
       # on stage even though the load was simply still in flight.
       - name: Wait for Snowpipe to finish processing (poll, not a fixed sleep)
         run: |
+          PIPE_FQN="${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.pipe_name }}"
           for i in $(seq 1 24); do
-            RAW_JSON=$(snow sql -q "SELECT SYSTEM\$PIPE_STATUS('DEV_CUSTOMER_DB.RAW.CUSTOMER_INGEST_PIPE') AS STATUS;" --format json)
+            RAW_JSON=$(snow sql -q "SELECT SYSTEM\$PIPE_STATUS('${PIPE_FQN}') AS STATUS;" --format json)
             PENDING=$(echo "$RAW_JSON" | jq -r '.[0].STATUS' | jq -r '.pendingFileCount')
             echo "Attempt $i/24: pendingFileCount=$PENDING"
             if [ "$PENDING" = "0" ]; then
@@ -85,4 +111,4 @@ jobs:
           fi
 
       - name: Verify row count
-        run: snow sql -q "SELECT COUNT(*) AS row_count FROM DEV_CUSTOMER_DB.RAW.CUSTOMERS;"
+        run: snow sql -q "SELECT COUNT(*) AS row_count FROM ${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.table }};"

@@ -1,0 +1,4 @@
+# Force LF line endings for shell scripts, regardless of local git config. Prevents
+# CRLF/LF mismatches between Windows checkouts and Linux CI runners from breaking bash
+# execution (e.g. "bad interpreter" or silent script failures).
+*.sh text eol=lf
