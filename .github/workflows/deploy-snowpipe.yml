@@ -1,0 +1,121 @@
+name: Deploy Snowpipe
+
+# Named for the ingestion *pattern* this workflow implements (Snowpipe) rather than any
+# one domain — a future Openflow- or API-based ingestion domain would get its own sibling
+# workflow (e.g. deploy-openflow.yml), not a bigger version of this one. Within the
+# Snowpipe pattern, every domain shares the exact same templated SQL
+# (sql/_template/*.sql) and differs only in its sql/domains/<domain>/config.json — same
+# zero-duplication principle as Repo 1's DCM templating.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sql/**"
+      - ".github/workflows/deploy-snowpipe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Only domains listed in sql/active_ingestion_domains.json ever get a deploy job below,
+  # and only when their own sql/domains/<domain>/ changed (or the shared sql/_template/
+  # did) — same mechanism as snowflake-platform-tf's dcm/detect-changed-domains.sh. Keeps
+  # CI load flat as ingestion domains scale up, instead of redeploying every domain's
+  # Snowpipe objects on every single push to this repo.
+  detect-domains:
+    name: Detect Changed Domains
+    runs-on: ubuntu-latest
+    outputs:
+      domains: ${{ steps.detect.outputs.domains }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect which ingestion domains changed
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DOMAINS=$(bash sql/detect-changed-domains.sh ALL)
+          else
+            DOMAINS=$(bash sql/detect-changed-domains.sh "${{ github.event.before }}" "${{ github.sha }}")
+          fi
+          echo "Domains to deploy: $DOMAINS"
+          echo "domains=$DOMAINS" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy Snowpipe objects (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: detect-domains
+    if: needs.detect-domains.outputs.domains != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-domains.outputs.domains) }}
+    # Each domain's own GitHub Environment (and therefore its own OIDC identity subject
+    # claim, required reviewers, secrets) — this is what lets domains in this shared repo
+    # operate independently of each other, not just share one blanket DEV-Ingest gate.
+    environment:
+      name: ${{ matrix.github_environment }}
+
+    env:
+      SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Load domain config
+        id: config
+        run: |
+          CONFIG_FILE="sql/domains/${{ matrix.name }}/config.json"
+          echo "user=$(jq -r .user "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "role=$(jq -r .role "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "warehouse=$(jq -r .warehouse "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Snowflake CLI (OIDC)
+        uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+
+      # Least-privilege: this domain's ingestion identity has exactly one role, so it's
+      # specified explicitly here rather than relying on a DEFAULT_ROLE (same reasoning as
+      # the dbt profile in Repo 3).
+      - name: Create default Snowflake CLI connection (OIDC)
+        run: |
+          snow connection add \
+            --connection-name github \
+            --account "$SNOWFLAKE_ACCOUNT" \
+            --user "${{ steps.config.outputs.user }}" \
+            --role "${{ steps.config.outputs.role }}" \
+            --warehouse "${{ steps.config.outputs.warehouse }}" \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --default \
+            --no-interactive
+
+      # Every file below is the exact same template for every domain (sql/_template/) —
+      # --enable-templating JINJA + one -D flag per sql/domains/<domain>/config.json key
+      # is what makes it render this domain's actual object names. Onboarding ingestion
+      # domain #2+ needs zero new SQL, only a new config.json (see README's "Onboarding a
+      # New Domain" section).
+      - name: Deploy Snowpipe objects from template
+        run: |
+          CONFIG_FILE="sql/domains/${{ matrix.name }}/config.json"
+          D_ARGS=()
+          while IFS= read -r line; do
+            D_ARGS+=("-D" "$line")
+          done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$CONFIG_FILE")
+
+          for f in sql/_template/01_file_format.sql sql/_template/02_storage_integration.sql sql/_template/03_external_stage.sql sql/_template/04_pipe.sql; do
+            echo "::group::snow sql -f $f"
+            snow sql -f "$f" --enable-templating JINJA "${D_ARGS[@]}"
+            echo "::endgroup::"
+          done

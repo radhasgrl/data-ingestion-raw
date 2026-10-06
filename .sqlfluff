@@ -6,3 +6,20 @@ dialect = snowflake
 # doesn't match sqlfluff's default style, and failing CI on indentation alone would make
 # every PR show a red X for non-issues rather than real problems.
 exclude_rules = layout.indent, layout.long_lines
+
+# sql/_template/*.sql is Jinja2-templated (rendered per-domain at deploy time via
+# `snow sql --enable-templating JINJA`, see sql/domains/<domain>/config.json). sqlfluff's
+# default templater is also jinja, so it needs representative values for every variable
+# used across the template files to render something parseable — these are placeholder
+# values for linting purposes only, not a real domain's actual config.
+[sqlfluff:templater:jinja:context]
+domain = DOMAIN
+domain_label = domain
+database = DEV_DOMAIN_DB
+bucket_prefix =
+bucket_prefix_comment =
+table = TABLE_NAME
+stage_name = DOMAIN_RAW_STAGE
+pipe_name = DOMAIN_INGEST_PIPE
+file_format_name = DOMAIN_CSV_FORMAT
+integration_name = DOMAIN_RAW_S3_INTEGRATION
