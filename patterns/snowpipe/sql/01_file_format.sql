@@ -1,7 +1,7 @@
 -- CSV format for the sample {{ domain_label }} data. Deployed by the domain's ingestion
 -- service identity, which has CREATE FILE FORMAT on {{ database }}.RAW (see Repo 1's
 -- dcm/_template/sources/definitions/grants.sql). Fully generic: a new ingestion domain
--- needs zero new SQL here, only a new sql/domains/<domain>/config.json.
+-- needs zero new SQL here, only a new sources/<domain>/snowpipe-params.yml.
 CREATE OR REPLACE FILE FORMAT {{ database }}.RAW.{{ file_format_name }}
   TYPE = CSV
   FIELD_DELIMITER = ','

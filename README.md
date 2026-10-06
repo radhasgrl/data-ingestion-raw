@@ -28,28 +28,41 @@ format, pipe) that load into Repo 1's `RAW` tables, plus the CI/CD that runs it.
 
 ```
 .
-├── sql/
-│   ├── _template/                    # THE canonical, domain-agnostic Snowpipe-pattern
-│   │   ├── 01_file_format.sql        #   template — Jinja2-templated, zero hardcoded
-│   │   ├── 02_storage_integration.sql #  domain names. Rendered via
-│   │   ├── 03_external_stage.sql     #   `snow sql --enable-templating JINJA`, not a
-│   │   └── 04_pipe.sql               #   custom synthesis script (Repo 1 needs one
-│   │                                 #   because DCM owns that mechanism itself; the
-│   │                                 #   Snowflake CLI's own templating does it here).
-│   ├── domains/
-│   │   └── customer/
-│   │       └── config.json           # Customer's own values — database, table, stage/
-│   │                                 #   pipe/integration names, bucket prefix, identity.
-│   │                                 #   Zero SQL.
-│   ├── active_ingestion_domains.json # The "go live" switch — only domains listed here
-│   │                                 #   ever get a deploy-snowpipe.yml CI job
-│   └── detect-changed-domains.sh     # diffs changed files -> which active domains'
-│                                     #   deploy jobs should run this CI run
+├── patterns/
+│   ├── snowpipe/                     # THE canonical, domain-agnostic Snowpipe-pattern
+│   │   ├── sql/
+│   │   │   ├── 01_file_format.sql    #   template — Jinja2-templated, zero hardcoded
+│   │   │   ├── 02_storage_integration.sql # domain names. Rendered via
+│   │   │   ├── 03_external_stage.sql #   `snow sql --enable-templating JINJA`, not a
+│   │   │   └── 04_pipe.sql           #   custom synthesis script (Repo 1 needs one
+│   │   │                            #   because DCM owns that mechanism itself; the
+│   │   │                            #   Snowflake CLI's own templating does it here).
+│   │   └── active_domains.json       # The "go live" switch for THIS pattern — only
+│   │                                 #   domains listed here ever get a
+│   │                                 #   deploy-snowpipe.yml CI job
+│   ├── openflow/                     # Reserved, dormant pattern — proves the "one
+│   │   ├── README.md                 #   workflow per pattern" structure generalizes.
+│   │   └── active_domains.json       #   Empty ([]) — deploy-openflow.yml never runs.
+│   └── api/                          # Same as openflow/, for a custom API-poller pattern.
+│       ├── README.md
+│       └── active_domains.json       # Empty ([])
+│
+├── sources/
+│   └── customer/
+│       └── snowpipe-params.yml       # Customer's own values for the Snowpipe pattern —
+│                                     #   database, table, stage/pipe/integration names,
+│                                     #   bucket prefix, identity. Zero SQL.
+│
+├── detect-changed-domains.sh         # diffs changed files -> which active domains' deploy
+│                                     #   jobs should run, per pattern (shared by all 3
+│                                     #   deploy-*.yml workflows, not duplicated per pattern)
 │
 ├── .github/workflows/
 │   ├── deploy-snowpipe.yml           # detect-domains + matrix deploy job (one per changed
 │   │                                 #   active domain), on push to main or workflow_dispatch
-│   ├── validate-pipe.yml             # sqlfluff lint of sql/_template/ + diff preview, on PR
+│   ├── deploy-openflow.yml           # same shape, dormant (patterns/openflow/active_domains.json is empty)
+│   ├── deploy-api.yml                # same shape, dormant (patterns/api/active_domains.json is empty)
+│   ├── validate-pipe.yml             # sqlfluff lint of patterns/snowpipe/sql/ + diff preview, on PR
 │   ├── load-sample-data.yml          # workflow_dispatch, domain input — demo helper
 │   └── reset-demo-data.yml           # workflow_dispatch, domain input — demo helper
 │
@@ -62,19 +75,22 @@ format, pipe) that load into Repo 1's `RAW` tables, plus the CI/CD that runs it.
 Same discipline as Repo 1's domain templating — a new domain using the **Snowpipe pattern**
 needs zero new SQL:
 
-1. Write `sql/domains/<domain>/config.json` (copy Customer's, change the values — database,
-   table, stage/pipe/integration names, `bucket_prefix`, identity/role/warehouse).
+1. Write `sources/<domain>/snowpipe-params.yml` (copy Customer's, change the values —
+   database, table, stage/pipe/integration names, `bucket_prefix`, identity/role/warehouse).
 2. Add `{"name": "<domain>", "target": "<DOMAIN>", "github_environment": "DEV-Ingest-<Domain>"}`
-   to `sql/active_ingestion_domains.json`.
+   to `patterns/snowpipe/active_domains.json`.
 3. Create that domain's `GITHUB_DEV_<DOMAIN>_INGEST_SVC` identity and `DEV-Ingest-<Domain>`
-   GitHub Environment (see Repo 1's `terraform/domain_identities.tf` and this repo's
+   GitHub Environment (see Repo 1's `terraform/domains.yaml` and this repo's
    "Identity and access" section below).
 4. Merge. `deploy-snowpipe.yml`'s detect-domains job picks up the new domain automatically.
 
-A **different ingestion pattern** (Openflow, a custom API poller, etc.) gets its own sibling
-workflow (e.g. `deploy-openflow.yml`) and its own `sql/_template_openflow/` — not a bigger
-version of this one. This repo stays organized by pattern, same as the user's original
-request: "repo 2 will have = ingestion pattern based" workflows.
+A **different ingestion pattern** gets its own sibling folder (`patterns/<pattern>/`) and
+workflow (`deploy-<pattern>.yml`) — not a bigger version of this one. `patterns/openflow/`
+and `patterns/api/` already exist as dormant, ready-to-use examples of this (see their own
+READMEs for the exact activation steps) — proving the structure generalizes without
+fabricating fake Openflow/API functionality that doesn't exist yet. This repo stays
+organized by pattern, same as the user's original request: "repo 2 will have = ingestion
+pattern based" workflows.
 
 ## Manual-trigger Snowpipe, by design
 
@@ -82,7 +98,7 @@ This demo uses `AUTO_INGEST = FALSE` — you upload a file, then run `ALTER PIPE
 to load it, rather than relying on an S3 event notification → SQS → Snowpipe auto-trigger.
 This is a deliberate reliability choice for a live demo (deterministic, instant, no extra
 AWS event-notification wiring to get wrong). Upgrading to full auto-ingest later only needs:
-set `AUTO_INGEST = TRUE` in `sql/_template/04_pipe.sql`, then wire the pipe's
+set `AUTO_INGEST = TRUE` in `patterns/snowpipe/sql/04_pipe.sql`, then wire the pipe's
 `notification_channel` (see `DESC PIPE`) to an S3 Event Notification on the bucket —
 nothing else changes, and the change applies to every domain using this pattern at once.
 
@@ -96,11 +112,11 @@ all provisioned by Repo 1's Terraform (`ingestion_aws_infra.tf`), not this repo.
 only references those already-created resource names/ARNs in its SQL and CI — it never
 creates or destroys AWS infrastructure. The bucket is shared across every domain using this
 pattern; what's per-domain is the prefix within it (`bucket_prefix` in each domain's
-`config.json`).
+`snowpipe-params.yml`).
 
 ### 2. Deploy the Snowflake objects (CI — automatic on push, or `workflow_dispatch`)
 
-`.github/workflows/deploy-snowpipe.yml` renders `sql/_template/01_file_format.sql` →
+`.github/workflows/deploy-snowpipe.yml` renders `patterns/snowpipe/sql/01_file_format.sql` →
 `02_storage_integration.sql` → `03_external_stage.sql` → `04_pipe.sql` for each changed
 active domain, as that domain's own ingestion identity (`GITHUB_DEV_INGEST_SVC` for
 Customer — least-privilege: only `DEV_CUSTOMER_INGEST_SERVICE_PRSN`, provisioned by Repo 1).
@@ -139,7 +155,7 @@ will not be able to read from S3.
 
 | Item | Value | Owned by |
 |---|---|---|
-| Snowflake user | `GITHUB_DEV_INGEST_SVC` | Terraform (Repo 1, `terraform/domain_identities.tf`) |
+| Snowflake user | `GITHUB_DEV_INGEST_SVC` | Terraform (Repo 1, `terraform/modules/domain_onboarding/` + `terraform/domains.yaml`) |
 | Role | `DEV_CUSTOMER_INGEST_SERVICE_PRSN` (Tier 1 persona) | DCM (Repo 1, `dcm/_template/sources/definitions/roles.sql` + `grants.sql`) |
 | Effective access | `CREATE INTEGRATION` (account), `CREATE STAGE/FILE FORMAT/PIPE` + read-write on `DEV_CUSTOMER_DB.RAW`, `USAGE` on `DEV_CUSTOMER_INGEST_WH` | Via `DEV_CUSTOMER_INGEST_FNCRL` (Tier 2) |
 | Auth method | GitHub OIDC workload identity — no stored password, key, or token | — |

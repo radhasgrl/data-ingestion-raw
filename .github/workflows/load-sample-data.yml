@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       domain:
-        description: "Domain to load sample data into (folder name under sql/domains/)"
+        description: "Domain to load sample data into (folder name under sources/)"
         required: true
         default: "customer"
         type: string
@@ -34,21 +34,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Load domain config
+      - name: Load domain params (YAML -> JSON)
         id: config
         run: |
-          CONFIG_FILE="sql/domains/${{ inputs.domain }}/config.json"
-          if [ ! -f "$CONFIG_FILE" ]; then
-            echo "::error::No such domain '${{ inputs.domain }}' (expected $CONFIG_FILE to exist)"
+          PARAMS_FILE="sources/${{ inputs.domain }}/snowpipe-params.yml"
+          if [ ! -f "$PARAMS_FILE" ]; then
+            echo "::error::No such domain '${{ inputs.domain }}' on the Snowpipe pattern (expected $PARAMS_FILE to exist)"
             exit 1
           fi
-          echo "database=$(jq -r .database "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "table=$(jq -r .table "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "pipe_name=$(jq -r .pipe_name "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "bucket_prefix=$(jq -r .bucket_prefix "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "user=$(jq -r .user "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "role=$(jq -r .role "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "warehouse=$(jq -r .warehouse "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          pip install --quiet pyyaml
+          python3 -c "import yaml, json; print(json.dumps(yaml.safe_load(open('${PARAMS_FILE}'))))" > params.json
+          echo "database=$(jq -r .database params.json)" >> "$GITHUB_OUTPUT"
+          echo "table=$(jq -r .table params.json)" >> "$GITHUB_OUTPUT"
+          echo "pipe_name=$(jq -r .pipe_name params.json)" >> "$GITHUB_OUTPUT"
+          echo "bucket_prefix=$(jq -r .bucket_prefix params.json)" >> "$GITHUB_OUTPUT"
+          echo "user=$(jq -r .user params.json)" >> "$GITHUB_OUTPUT"
+          echo "role=$(jq -r .role params.json)" >> "$GITHUB_OUTPUT"
+          echo "warehouse=$(jq -r .warehouse params.json)" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
