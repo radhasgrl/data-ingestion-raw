@@ -1,17 +1,20 @@
 name: Deploy Snowpipe
 
 # Named for the ingestion *pattern* this workflow implements (Snowpipe) rather than any
-# one domain — a future Openflow- or API-based ingestion domain would get its own sibling
-# workflow (e.g. deploy-openflow.yml), not a bigger version of this one. Within the
-# Snowpipe pattern, every domain shares the exact same templated SQL
-# (sql/_template/*.sql) and differs only in its sql/domains/<domain>/config.json — same
-# zero-duplication principle as Repo 1's DCM templating.
+# one domain — a future Openflow- or API-based ingestion domain gets its own sibling
+# workflow (deploy-openflow.yml / deploy-api.yml, both already present and wired up, but
+# dormant until a real domain is onboarded onto those patterns — see patterns/openflow/
+# and patterns/api/). Within the Snowpipe pattern, every domain shares the exact same
+# templated SQL (patterns/snowpipe/sql/*.sql) and differs only in its own
+# sources/<domain>/snowpipe-params.yml — same zero-duplication principle as Repo 1's DCM
+# templating.
 
 on:
   push:
     branches: [main]
     paths:
-      - "sql/**"
+      - "patterns/snowpipe/**"
+      - "sources/**/snowpipe-params.yml"
       - ".github/workflows/deploy-snowpipe.yml"
   workflow_dispatch:
 
@@ -20,11 +23,11 @@ permissions:
   id-token: write
 
 jobs:
-  # Only domains listed in sql/active_ingestion_domains.json ever get a deploy job below,
-  # and only when their own sql/domains/<domain>/ changed (or the shared sql/_template/
-  # did) — same mechanism as snowflake-platform-tf's dcm/detect-changed-domains.sh. Keeps
-  # CI load flat as ingestion domains scale up, instead of redeploying every domain's
-  # Snowpipe objects on every single push to this repo.
+  # Only domains listed in patterns/snowpipe/active_domains.json ever get a deploy job
+  # below, and only when their own sources/<domain>/snowpipe-params.yml changed (or the
+  # shared patterns/snowpipe/ template did) — same mechanism as snowflake-platform-tf's
+  # dcm/detect-changed-domains.sh. Keeps CI load flat as ingestion domains scale up,
+  # instead of redeploying every domain's Snowpipe objects on every single push.
   detect-domains:
     name: Detect Changed Domains
     runs-on: ubuntu-latest
@@ -41,9 +44,9 @@ jobs:
         id: detect
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            DOMAINS=$(bash sql/detect-changed-domains.sh ALL)
+            DOMAINS=$(bash detect-changed-domains.sh snowpipe ALL)
           else
-            DOMAINS=$(bash sql/detect-changed-domains.sh "${{ github.event.before }}" "${{ github.sha }}")
+            DOMAINS=$(bash detect-changed-domains.sh snowpipe "${{ github.event.before }}" "${{ github.sha }}")
           fi
           echo "Domains to deploy: $DOMAINS"
           echo "domains=$DOMAINS" >> "$GITHUB_OUTPUT"
@@ -72,13 +75,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Load domain config
+      # sources/<domain>/snowpipe-params.yml is YAML (matches the plan's file-tree
+      # exactly); converted to JSON once here so both this step and the deploy step can
+      # read individual values via jq without a second YAML parse.
+      - name: Load domain params (YAML -> JSON)
         id: config
         run: |
-          CONFIG_FILE="sql/domains/${{ matrix.name }}/config.json"
-          echo "user=$(jq -r .user "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "role=$(jq -r .role "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          echo "warehouse=$(jq -r .warehouse "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          PARAMS_FILE="sources/${{ matrix.name }}/snowpipe-params.yml"
+          pip install --quiet pyyaml
+          python3 -c "import yaml, json; print(json.dumps(yaml.safe_load(open('${PARAMS_FILE}'))))" > params.json
+          echo "user=$(jq -r .user params.json)" >> "$GITHUB_OUTPUT"
+          echo "role=$(jq -r .role params.json)" >> "$GITHUB_OUTPUT"
+          echo "warehouse=$(jq -r .warehouse params.json)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Snowflake CLI (OIDC)
         uses: snowflakedb/snowflake-actions@v3
@@ -101,20 +109,20 @@ jobs:
             --default \
             --no-interactive
 
-      # Every file below is the exact same template for every domain (sql/_template/) —
-      # --enable-templating JINJA + one -D flag per sql/domains/<domain>/config.json key
-      # is what makes it render this domain's actual object names. Onboarding ingestion
-      # domain #2+ needs zero new SQL, only a new config.json (see README's "Onboarding a
-      # New Domain" section).
+      # Every file below is the exact same template for every domain
+      # (patterns/snowpipe/sql/) — --enable-templating JINJA + one -D flag per
+      # sources/<domain>/snowpipe-params.yml key is what makes it render this domain's
+      # actual object names. Onboarding ingestion domain #2+ onto this pattern needs zero
+      # new SQL, only a new snowpipe-params.yml (see README's "Onboarding a new ingestion
+      # domain" section).
       - name: Deploy Snowpipe objects from template
         run: |
-          CONFIG_FILE="sql/domains/${{ matrix.name }}/config.json"
           D_ARGS=()
           while IFS= read -r line; do
             D_ARGS+=("-D" "$line")
-          done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$CONFIG_FILE")
+          done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' params.json)
 
-          for f in sql/_template/01_file_format.sql sql/_template/02_storage_integration.sql sql/_template/03_external_stage.sql sql/_template/04_pipe.sql; do
+          for f in patterns/snowpipe/sql/01_file_format.sql patterns/snowpipe/sql/02_storage_integration.sql patterns/snowpipe/sql/03_external_stage.sql patterns/snowpipe/sql/04_pipe.sql; do
             echo "::group::snow sql -f $f"
             snow sql -f "$f" --enable-templating JINJA "${D_ARGS[@]}"
             echo "::endgroup::"

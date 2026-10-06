@@ -7,11 +7,11 @@ dialect = snowflake
 # every PR show a red X for non-issues rather than real problems.
 exclude_rules = layout.indent, layout.long_lines
 
-# sql/_template/*.sql is Jinja2-templated (rendered per-domain at deploy time via
-# `snow sql --enable-templating JINJA`, see sql/domains/<domain>/config.json). sqlfluff's
-# default templater is also jinja, so it needs representative values for every variable
-# used across the template files to render something parseable — these are placeholder
-# values for linting purposes only, not a real domain's actual config.
+# patterns/snowpipe/sql/*.sql is Jinja2-templated (rendered per-domain at deploy time via
+# `snow sql --enable-templating JINJA`, see sources/<domain>/snowpipe-params.yml).
+# sqlfluff's default templater is also jinja, so it needs representative values for every
+# variable used across the template files to render something parseable — these are
+# placeholder values for linting purposes only, not a real domain's actual config.
 [sqlfluff:templater:jinja:context]
 domain = DOMAIN
 domain_label = domain
