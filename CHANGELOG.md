@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/radhasgrl/data-ingestion-raw/compare/v1.0.0...v1.0.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **ingestion:** remove unescaped apostrophe from TEST params comment ([#13](https://github.com/radhasgrl/data-ingestion-raw/issues/13)) ([f27596c](https://github.com/radhasgrl/data-ingestion-raw/commit/f27596cc38d79faa45fae7cad0a6f2730f643edb))
+
 ## 1.0.0 (2026-10-07)
 
 
