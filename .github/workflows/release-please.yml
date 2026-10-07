@@ -1,0 +1,36 @@
+name: release-please
+
+# Maintains ONE standing "Release PR" that accumulates every Conventional-Commits-formatted
+# PR title merged to main (see pr-title-lint.yml) since the last release, recalculating the
+# proposed version and regenerating CHANGELOG.md on every push. Mirrors
+# snowflake-platform-tf's identical release-please.yml -- see that repo's README for the
+# full rationale (deliberately does not tag/release automatically; merging the Release PR
+# is the actual "cut a release" decision).
+#
+# Runs independently of, and does not block, deploy-snowpipe.yml -- DEV still deploys
+# continuously on every merge to main, unchanged.
+#
+# KNOWN LIMITATION (documented, not a bug): Release PRs opened via the default GITHUB_TOKEN
+# won't trigger pull_request-triggered workflows on themselves (GitHub's anti-recursion
+# safeguard). Non-issue in this solo-account demo (every merge already uses an admin
+# override); a real multi-person team would need a dedicated PAT/GitHub App token instead.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
