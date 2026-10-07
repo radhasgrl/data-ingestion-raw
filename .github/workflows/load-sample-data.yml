@@ -59,9 +59,12 @@ jobs:
           aws-region: ap-southeast-2
 
       - name: Upload sample CSV to S3
+        id: upload
         run: |
+          FILE_NAME="customers_sample_$(date +%s).csv"
           aws s3 cp sample-data/customers_sample.csv \
-            "s3://data-ingestion-raw-525218385225/${{ steps.config.outputs.bucket_prefix }}customers_sample_$(date +%s).csv"
+            "s3://data-ingestion-raw-525218385225/${{ steps.config.outputs.bucket_prefix }}${FILE_NAME}"
+          echo "file_name=${FILE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Setup Snowflake CLI (OIDC)
         uses: snowflakedb/snowflake-actions@v3
@@ -84,33 +87,54 @@ jobs:
       - name: Refresh pipe (manual-trigger Snowpipe)
         run: snow sql -q "ALTER PIPE ${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.pipe_name }} REFRESH;"
 
-      # ALTER PIPE ... REFRESH is asynchronous (it queues files; COPY happens in the
-      # background). Poll SYSTEM$PIPE_STATUS until pendingFileCount reaches 0 instead of
-      # guessing a fixed sleep duration — a fixed `sleep 20` showed ROW_COUNT=0 on a slow
-      # run during initial testing of this pipeline, which would look like a failed demo
-      # on stage even though the load was simply still in flight.
-      - name: Wait for Snowpipe to finish processing (poll, not a fixed sleep)
+      # Polls COPY_HISTORY for the SPECIFIC file this run just uploaded, rather than
+      # pendingFileCount (a pipe-wide counter that hits 0 a moment before the triggering
+      # file's own COPY actually commits — observed repeatedly in testing: pendingFileCount
+      # reaches 0, but this exact file isn't yet in COPY_HISTORY as 'Loaded' for several
+      # more seconds, which a blind `SELECT COUNT(*)` right after has no way to detect).
+      # This is a strictly more reliable signal: it waits for *this run's own file*,
+      # not an aggregate counter, and distinguishes a genuine load failure (fails fast) from
+      # "still in flight" (keeps polling).
+      - name: Wait for this run's file to appear in COPY_HISTORY
+        id: copy_status
         run: |
-          PIPE_FQN="${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.pipe_name }}"
+          DATABASE="${{ steps.config.outputs.database }}"
+          TABLE="${{ steps.config.outputs.table }}"
+          FILE_NAME="${{ steps.upload.outputs.file_name }}"
+          STATUS=""
           for i in $(seq 1 24); do
-            RAW_JSON=$(snow sql -q "SELECT SYSTEM\$PIPE_STATUS('${PIPE_FQN}') AS STATUS;" --format json)
-            PENDING=$(echo "$RAW_JSON" | jq -r '.[0].STATUS' | jq -r '.pendingFileCount')
-            echo "Attempt $i/24: pendingFileCount=$PENDING"
-            if [ "$PENDING" = "0" ]; then
-              echo "Snowpipe has finished processing all queued files."
+            RESULT=$(snow sql --format json -q "
+              SELECT status, row_count, first_error_message
+              FROM TABLE(${DATABASE}.INFORMATION_SCHEMA.COPY_HISTORY(
+                TABLE_NAME=>'${DATABASE}.RAW.${TABLE}',
+                START_TIME=>DATEADD(hours, -1, CURRENT_TIMESTAMP())
+              ))
+              WHERE file_name = '${FILE_NAME}'
+              ORDER BY last_load_time DESC
+              LIMIT 1;
+            ")
+            STATUS=$(echo "$RESULT" | jq -r '.[0].STATUS // empty')
+            echo "Attempt $i/24: status for ${FILE_NAME} = '${STATUS:-not yet visible}'"
+
+            if [ "$STATUS" = "Loaded" ]; then
+              ROW_COUNT=$(echo "$RESULT" | jq -r '.[0].ROW_COUNT')
+              echo "File loaded successfully: ${ROW_COUNT} row(s)."
+              echo "row_count=${ROW_COUNT}" >> "$GITHUB_OUTPUT"
               break
+            elif [ "$STATUS" = "Load failed" ] || [ "$STATUS" = "Partially loaded" ]; then
+              ERROR_MSG=$(echo "$RESULT" | jq -r '.[0].FIRST_ERROR_MESSAGE // "no error message"')
+              echo "::error::Snowpipe load for ${FILE_NAME} ended with status '${STATUS}': ${ERROR_MSG}"
+              exit 1
             fi
             sleep 5
           done
-          if [ "$PENDING" != "0" ]; then
-            echo "::warning::Snowpipe still reports $PENDING pending file(s) after 2 minutes of polling — the row count check below may be stale. Re-run this workflow or check SYSTEM\$PIPE_STATUS manually."
-          else
-            # Small safety margin: pendingFileCount can hit 0 a moment before the loaded
-            # rows are actually queryable (observed once in testing: pendingFileCount=0
-            # immediately followed by ROW_COUNT=0, with a retry a few seconds later
-            # correctly showing the real count).
-            sleep 5
+
+          if [ "$STATUS" != "Loaded" ]; then
+            echo "::error::${FILE_NAME} still not showing as 'Loaded' in COPY_HISTORY after 2 minutes of polling (last status: '${STATUS:-none}')."
+            exit 1
           fi
 
       - name: Verify row count
-        run: snow sql -q "SELECT COUNT(*) AS row_count FROM ${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.table }};"
+        run: |
+          echo "Rows loaded by this run's file: ${{ steps.copy_status.outputs.row_count }}"
+          snow sql -q "SELECT COUNT(*) AS total_row_count FROM ${{ steps.config.outputs.database }}.RAW.${{ steps.config.outputs.table }};"
