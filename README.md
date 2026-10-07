@@ -164,3 +164,24 @@ will not be able to read from S3.
 | AWS role (Snowflake) | `data-ingestion-raw-snowflake-storage-integration` | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
 | S3 bucket | `data-ingestion-raw-525218385225` (shared across domains, prefix-scoped per domain) | Terraform (Repo 1, `ingestion_aws_infra.tf`) |
 
+## Environments & Versioning
+
+| Environment | How it's reached | Snowflake objects (Customer) | GitHub Environment | Approval gate |
+|---|---|---|---|---|
+| DEV | Automatic — every merge to `main` | `DEV_CUSTOMER_DB`, `DEV_CUSTOMER_INGEST_WH`, `DEV_CUSTOMER_INGEST_SERVICE_PRSN` | `DEV-Ingest` | None (continuous) |
+| TEST | Manual — `promote.yml` dispatched against a specific release tag | `TEST_CUSTOMER_DB`, TEST-distinct stage/pipe/file-format/integration names (see `sources/customer/snowpipe-params-test.yml`) | `TEST-Ingest` | Required reviewer, non-bypassable even by an admin |
+| PROD | Not built yet | — | — | — |
+
+Same pattern as Repo 1 (`snowflake-platform-tf`) — see that repo's README for the full
+mechanics:
+- PR titles must follow Conventional Commits (`pr-title-lint.yml`, required check) — this
+  repo squash-merges, so the title becomes `main`'s commit message, which
+  `release-please` reads to compute version bumps.
+- `release-please.yml` maintains one standing Release PR; merging it is the deliberate
+  "cut a release" action that creates the real tag + GitHub Release.
+- `promote.yml` (`workflow_dispatch`-only) checks out the exact tagged release — not
+  whatever `main` currently is — and deploys Customer's Snowpipe objects (file format,
+  storage integration, external stage, pipe) into TEST using genuinely distinct object
+  names from DEV's (not just a different database), so `CREATE ... IF NOT EXISTS`
+  statements never silently no-op against DEV's already-existing objects.
+
