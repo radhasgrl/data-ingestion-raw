@@ -1,0 +1,98 @@
+name: Promote to Environment
+
+# Deliberately workflow_dispatch-only -- promotion is always a manual, deliberate action,
+# never automatic. Checks out an EXACT tagged release (not whatever main currently is) and
+# deploys Customer's Snowpipe objects into the TEST tier, gated by the TEST-Ingest GitHub
+# Environment's required-reviewer protection rule. Mirrors snowflake-platform-tf's
+# promote.yml -- see that repo's README for the full promotion-model rationale.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Git tag to promote, e.g. v1.1.0 (see the repo's Releases page)"
+        required: true
+        type: string
+      target_environment:
+        description: "Environment to promote to"
+        required: true
+        type: choice
+        options:
+          - TEST
+        # PROD intentionally not listed yet -- no PROD identity, params file, or GitHub
+        # Environment exist today.
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Hardcoded to the Customer domain for now -- the only domain with a TEST params file
+  # today. Generalizing this into a matrix (one job per domain with TEST params) is the
+  # natural next step once a second ingestion domain is onboarded to TEST, mirroring
+  # deploy-snowpipe.yml's existing detect-domains + matrix pattern.
+  promote-customer-snowpipe:
+    name: Promote Customer Snowpipe (${{ inputs.target_environment }})
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target_environment }}-Ingest
+
+    env:
+      SNOWFLAKE_ACCOUNT: xygpmhm-gq04150
+
+    steps:
+      - name: Checkout exact tagged release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+          persist-credentials: false
+
+      # TEST-specific params file (sources/customer/snowpipe-params-test.yml) -- genuinely
+      # separate object names from DEV's sources/customer/snowpipe-params.yml, not just a
+      # different database name. See that file's header comment for why.
+      - name: Load domain TEST params (YAML -> JSON)
+        id: config
+        run: |
+          pip install --quiet pyyaml
+          python3 -c "import yaml, json; print(json.dumps(yaml.safe_load(open('sources/customer/snowpipe-params-test.yml'))))" > params.json
+          echo "user=$(jq -r .user params.json)" >> "$GITHUB_OUTPUT"
+          echo "role=$(jq -r .role params.json)" >> "$GITHUB_OUTPUT"
+          echo "warehouse=$(jq -r .warehouse params.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Snowflake CLI (OIDC)
+        uses: snowflakedb/snowflake-actions@v3
+        with:
+          use-oidc: true
+
+      # Fails fast with an actionable message if this identity doesn't exist yet -- same
+      # rationale as snowflake-platform-tf's "Verify DCM identity is ready" steps.
+      - name: Create default Snowflake CLI connection (OIDC)
+        run: |
+          snow connection add \
+            --connection-name github \
+            --account "$SNOWFLAKE_ACCOUNT" \
+            --user "${{ steps.config.outputs.user }}" \
+            --role "${{ steps.config.outputs.role }}" \
+            --warehouse "${{ steps.config.outputs.warehouse }}" \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --default \
+            --no-interactive
+
+      # Same templated SQL as deploy-snowpipe.yml (patterns/snowpipe/sql/), just driven by
+      # the TEST params file loaded above instead of the DEV one.
+      - name: Deploy Snowpipe objects from template
+        run: |
+          D_ARGS=()
+          while IFS= read -r line; do
+            D_ARGS+=("-D" "$line")
+          done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' params.json)
+
+          for f in patterns/snowpipe/sql/01_file_format.sql patterns/snowpipe/sql/02_storage_integration.sql patterns/snowpipe/sql/03_external_stage.sql patterns/snowpipe/sql/04_pipe.sql; do
+            echo "::group::snow sql -f $f"
+            snow sql -f "$f" --enable-templating JINJA "${D_ARGS[@]}"
+            echo "::endgroup::"
+          done
+
+      - name: Summary
+        run: echo "::notice::Promoted Customer Snowpipe ${{ inputs.version }} to ${{ inputs.target_environment }}"

@@ -1,0 +1,21 @@
+# Customer domain's TEST-tier parameter values for the Snowpipe ingestion pattern
+# (patterns/snowpipe/sql/*.sql). Mirrors sources/customer/snowpipe-params.yml (the DEV
+# config) but with TEST-distinct Snowflake object names throughout (stage/pipe/file
+# format/integration) -- reusing the DEV names here would silently no-op against the
+# already-existing DEV objects (CREATE ... IF NOT EXISTS) instead of creating genuinely
+# separate TEST ones, and would never update their STORAGE_ALLOWED_LOCATIONS/URL to the
+# TEST-specific bucket prefix below. Only used by promote.yml (workflow_dispatch,
+# approval-gated), never by the regular deploy-snowpipe.yml DEV pipeline.
+domain: "CUSTOMER"
+domain_label: "customer"
+database: "TEST_CUSTOMER_DB"
+bucket_prefix: "test/customer/"
+bucket_prefix_comment: " (test/customer/ prefix, isolated from DEV's bucket-root files)"
+table: "CUSTOMERS"
+stage_name: "CUSTOMER_TEST_RAW_STAGE"
+pipe_name: "CUSTOMER_TEST_INGEST_PIPE"
+file_format_name: "CUSTOMER_TEST_CSV_FORMAT"
+integration_name: "CUSTOMER_TEST_RAW_S3_INTEGRATION"
+role: "TEST_CUSTOMER_INGEST_SERVICE_PRSN"
+warehouse: "TEST_CUSTOMER_INGEST_WH"
+user: "GITHUB_TEST_CUSTOMER_INGEST_SVC"
