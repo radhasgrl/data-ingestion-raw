@@ -79,6 +79,15 @@ jobs:
             --default \
             --no-interactive
 
+      # TEMPORARY diagnostic step -- prints the new integration's actual
+      # STORAGE_AWS_EXTERNAL_ID so the AWS IAM role trust policy (Repo 1's
+      # terraform/ingestion_aws_infra.tf) can be updated to allow it. Removed once that
+      # fix is in place.
+      - name: DIAGNOSTIC - describe storage integration
+        run: |
+          snow sql -q "CREATE STORAGE INTEGRATION IF NOT EXISTS CUSTOMER_TEST_RAW_S3_INTEGRATION TYPE = EXTERNAL_STAGE STORAGE_PROVIDER = 'S3' ENABLED = TRUE STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::525218385225:role/data-ingestion-raw-snowflake-storage-integration' STORAGE_ALLOWED_LOCATIONS = ('s3://data-ingestion-raw-525218385225/test/customer/');"
+          snow sql -q "DESC INTEGRATION CUSTOMER_TEST_RAW_S3_INTEGRATION;"
+
       # Same templated SQL as deploy-snowpipe.yml (patterns/snowpipe/sql/), just driven by
       # the TEST params file loaded above instead of the DEV one.
       - name: Deploy Snowpipe objects from template
