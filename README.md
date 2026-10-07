@@ -156,7 +156,7 @@ will not be able to read from S3.
 | Item | Value | Owned by |
 |---|---|---|
 | Snowflake user | `GITHUB_DEV_INGEST_SVC` | Terraform (Repo 1, `terraform/modules/domain_onboarding/` + `terraform/domains.yaml`) |
-| Role | `DEV_CUSTOMER_INGEST_SERVICE_PRSN` (Tier 1 persona) | DCM (Repo 1, `dcm/_template/sources/definitions/roles.sql` + `grants.sql`) |
+| Role | `DEV_CUSTOMER_INGEST_SERVICE_PRSN` (Tier 1 persona) | DCM (Repo 1, `dcm/sources/definitions/roles.sql` + `grants.sql`) |
 | Effective access | `CREATE INTEGRATION` (account), `CREATE STAGE/FILE FORMAT/PIPE` + read-write on `DEV_CUSTOMER_DB.RAW`, `USAGE` on `DEV_CUSTOMER_INGEST_WH` | Via `DEV_CUSTOMER_INGEST_FNCRL` (Tier 2) |
 | Auth method | GitHub OIDC workload identity — no stored password, key, or token | — |
 | GitHub Environment | `DEV-Ingest` (Customer kept its original unprefixed name; later domains use `DEV-Ingest-<Domain>`) | This repo |
